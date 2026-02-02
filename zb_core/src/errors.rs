@@ -21,6 +21,19 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// Formats `Error` into a human-readable message.
+    ///
+    /// Each variant is rendered as a concise, user-facing string that includes any relevant context
+    /// (for example: formula or cask names, file paths, expected/actual checksums, or error messages).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::errors::Error;
+    ///
+    /// let err = Error::UnsupportedBottle { name: "libheif".into() };
+    /// assert!(format!("{}", err).contains("libheif"));
+    /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UnsupportedBottle { name } => {

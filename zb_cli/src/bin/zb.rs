@@ -8,6 +8,17 @@ use zb_cli::{
 };
 use zb_io::{ApiClient, create_cask_installer, install::create_installer};
 
+/// Program entry point for the CLI application.
+///
+/// Parses command-line arguments, delegates execution to `run`, prints a styled
+/// error message on failure, and exits with status code 1.
+///
+/// # Examples
+///
+/// ```no_run
+/// // The binary invokes this as its entry point.
+/// main();
+/// ```
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -18,6 +29,23 @@ async fn main() {
     }
 }
 
+/// Entrypoint for executing the CLI command represented by `cli`.
+///
+/// Resolves paths and initialization state, constructs installers and clients as needed,
+/// and dispatches to the appropriate command handler (including cask-aware paths).
+///
+/// # Returns
+///
+/// `Ok(())` on success, or a `zb_core::Error` describing the failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use zb_cli::cli::Cli;
+/// # async fn _example(cli: Cli) -> Result<(), zb_core::Error> {
+/// run(cli).await
+/// # }
+/// ```
 async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     if let Commands::Completion { shell } = cli.command {
         return commands::completion::execute(shell);

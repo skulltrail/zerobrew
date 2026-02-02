@@ -33,6 +33,22 @@ pub struct CaskArtifactRecord {
 }
 
 impl Database {
+    /// Open a SQLite-backed store at the given filesystem path and ensure its schema exists.
+    ///
+    /// `path` is the filesystem path to the SQLite database file to open. The function will create
+    /// the file if it does not exist and initialize the required tables.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Database)` containing an open connection with the schema initialized, or
+    /// `Err(Error::StoreCorruption)` if the database could not be opened or schema initialization failed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// let db = super::Database::open(Path::new("store.db")).unwrap();
+    /// ```
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(|e| Error::StoreCorruption {
             message: format!("failed to open database: {e}"),
@@ -53,6 +69,27 @@ impl Database {
         Ok(Self { conn })
     }
 
+    /// Create the database tables required by the store if they do not already exist.
+    ///
+    /// This initializes schema for kegs, store reference counts, linked files, casks,
+    /// and cask artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::StoreCorruption` if executing the schema batch fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rusqlite::Connection;
+    /// # use zb_core::Error;
+    /// # fn try_example() -> Result<(), Error> {
+    /// let conn = Connection::open_in_memory().unwrap();
+    /// // initialize schema for the in-memory database
+    /// super::init_schema(&conn)?;
+    /// # Ok(())
+    /// # }
+    /// ```
     fn init_schema(conn: &Connection) -> Result<(), Error> {
         conn.execute_batch(
             "
@@ -168,6 +205,17 @@ impl Database {
             .unwrap_or(0)
     }
 
+    /// Returns the list of store keys whose reference count is zero or less.
+    ///
+    /// Queries the `store_refs` table and returns all `store_key` values where `refcount <= 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// let keys = db.get_unreferenced_store_keys().unwrap();
+    /// assert!(keys.is_empty());
+    /// ```
     pub fn get_unreferenced_store_keys(&self) -> Result<Vec<String>, Error> {
         let mut stmt = self
             .conn
@@ -191,6 +239,17 @@ impl Database {
 
     // Cask-related methods
 
+    /// Looks up an installed cask by its token.
+    ///
+    /// Returns `Some(InstalledCask)` with the stored record if a cask with the given token exists, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// // No cask installed yet
+    /// assert!(db.get_installed_cask("nonexistent").is_none());
+    /// ```
     pub fn get_installed_cask(&self, token: &str) -> Option<InstalledCask> {
         self.conn
             .query_row(
@@ -208,6 +267,18 @@ impl Database {
             .ok()
     }
 
+    /// Retrieves all installed casks from the store, ordered by token.
+    ///
+    /// Returns a `Vec<InstalledCask>` containing one record per row in the `installed_casks` table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// // (setup: record a cask install in a transaction and commit)
+    /// let casks = db.list_installed_casks().unwrap();
+    /// assert!(casks.iter().all(|c| !c.token.is_empty()));
+    /// ```
     pub fn list_installed_casks(&self) -> Result<Vec<InstalledCask>, Error> {
         let mut stmt = self
             .conn
@@ -238,6 +309,17 @@ impl Database {
         Ok(casks)
     }
 
+    /// Retrieves all artifact records associated with a cask token.
+    ///
+    /// Returns a vector of `CaskArtifactRecord` for the given `token`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// let artifacts = db.get_cask_artifacts("example.token").unwrap();
+    /// assert!(artifacts.is_empty());
+    /// ```
     pub fn get_cask_artifacts(&self, token: &str) -> Result<Vec<CaskArtifactRecord>, Error> {
         let mut stmt = self
             .conn
@@ -364,6 +446,22 @@ impl<'a> InstallTransaction<'a> {
         Ok(store_key)
     }
 
+    /// Commits the active installation transaction, making all recorded changes permanent.
+    ///
+    /// The transaction is finalized; if it is not committed, it will be rolled back when dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// let tx = db.transaction().unwrap();
+    /// // record operations on tx ...
+    /// tx.commit().unwrap();
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the commit succeeded, `Err(Error::StoreCorruption)` if committing the transaction failed.
     pub fn commit(self) -> Result<(), Error> {
         self.tx.commit().map_err(|e| Error::StoreCorruption {
             message: format!("failed to commit transaction: {e}"),
@@ -372,6 +470,23 @@ impl<'a> InstallTransaction<'a> {
 
     // Cask-related transaction methods
 
+    /// Record or update an installed cask entry in the current transaction.
+    ///
+    /// Inserts or replaces a row in `installed_casks` with the provided token, version,
+    /// optional application path, and the current UNIX epoch seconds as `installed_at`.
+    ///
+    /// `app_path` may be `None` to indicate no recorded application path for the cask.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, `Err(Error::StoreCorruption)` if the database write fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // `tx` is an opened `InstallTransaction`
+    /// // tx.record_cask_install("com.example.foocask", "1.2.3", Some("/Applications/Foo.app")).unwrap();
+    /// ```
     pub fn record_cask_install(
         &self,
         token: &str,
@@ -396,6 +511,25 @@ impl<'a> InstallTransaction<'a> {
         Ok(())
     }
 
+    /// Records a single cask artifact for the given cask token, including its type,
+    /// source path, and installed path.
+    ///
+    /// On success the artifact row will be inserted or replaced in the database.
+    /// Returns `Err(Error::StoreCorruption)` if the database write fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// let mut tx = db.transaction().unwrap();
+    /// tx.record_cask_install("com.example.app", "1.0.0", Some("/Applications/Example.app")).unwrap();
+    /// tx.record_cask_artifact("com.example.app", "binary", "/tmp/example", "/usr/local/bin/example").unwrap();
+    /// tx.commit().unwrap();
+    ///
+    /// let artifacts = db.get_cask_artifacts("com.example.app").unwrap();
+    /// assert_eq!(artifacts.len(), 1);
+    /// assert_eq!(artifacts[0].artifact_type, "binary");
+    /// ```
     pub fn record_cask_artifact(
         &self,
         token: &str,
@@ -416,6 +550,23 @@ impl<'a> InstallTransaction<'a> {
         Ok(())
     }
 
+    /// Removes all artifact records for the cask identified by `token` and deletes its installed-cask record.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let db = Database::in_memory().unwrap();
+    /// let mut tx = db.transaction().unwrap();
+    /// tx.record_cask_install("foo", "1.0.0", Some("/Applications/Foo.app")).unwrap();
+    /// tx.record_cask_artifact("foo", "app", "/tmp/foo", "/Applications/Foo.app").unwrap();
+    /// tx.commit().unwrap();
+    ///
+    /// let mut tx = db.transaction().unwrap();
+    /// tx.record_cask_uninstall("foo").unwrap();
+    /// tx.commit().unwrap();
+    ///
+    /// assert!(db.get_installed_cask("foo").is_none());
+    /// ```
     pub fn record_cask_uninstall(&self, token: &str) -> Result<(), Error> {
         // Remove cask artifacts records
         self.tx

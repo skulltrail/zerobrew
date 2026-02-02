@@ -34,12 +34,60 @@ pub struct Cask {
 }
 
 impl Cask {
-    /// Returns the primary display name or the token
+    /// Primary display name for the cask, or the cask's token when no display names exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cask_with_name = Cask {
+    ///     token: "my-app".into(),
+    ///     name: vec!["My App".into()],
+    ///     version: "1.0".into(),
+    ///     url: "https://example.com".into(),
+    ///     sha256: None,
+    ///     artifacts: vec![],
+    ///     depends_on: CaskDependencies::default(),
+    ///     caveats: None,
+    ///     homepage: None,
+    ///     desc: None,
+    /// };
+    /// assert_eq!(cask_with_name.display_name(), "My App");
+    ///
+    /// let cask_without_name = Cask {
+    ///     name: vec![],
+    ///     ..cask_with_name
+    /// };
+    /// assert_eq!(cask_without_name.display_name(), "my-app");
+    /// ```
     pub fn display_name(&self) -> &str {
         self.name.first().map(|s| s.as_str()).unwrap_or(&self.token)
     }
 
-    /// Returns app artifacts (the .app bundles to install)
+    /// Collects app artifact paths (.app bundles) from the cask's artifacts.
+    ///
+    /// Returns a vector of string slices referencing each app path; empty if no app artifacts are present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zb_core::cask::{Cask, CaskArtifact, CaskDependencies, MacOsRequirement};
+    ///
+    /// let cask = Cask {
+    ///     token: "example".into(),
+    ///     name: vec!["Example".into()],
+    ///     version: "1.0".into(),
+    ///     url: "https://example.com".into(),
+    ///     sha256: None,
+    ///     artifacts: vec![CaskArtifact::App(vec!["Example.app".into(), "Helper.app".into()])],
+    ///     depends_on: CaskDependencies { formula: vec![], cask: vec![], macos: None },
+    ///     caveats: None,
+    ///     homepage: None,
+    ///     desc: None,
+    /// };
+    ///
+    /// let apps = cask.app_artifacts();
+    /// assert_eq!(apps, vec!["Example.app", "Helper.app"]);
+    /// ```
     pub fn app_artifacts(&self) -> Vec<&str> {
         self.artifacts
             .iter()
@@ -51,7 +99,28 @@ impl Cask {
             .collect()
     }
 
-    /// Returns pkg artifacts (installer packages)
+    /// Collects all package artifact paths (.pkg) from the cask.
+    ///
+    /// Returns a vector of string slices referencing each package path; empty if there are no package artifacts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cask = Cask {
+    ///     token: "example".into(),
+    ///     name: vec![],
+    ///     version: "1.0".into(),
+    ///     url: "https://example.com".into(),
+    ///     sha256: None,
+    ///     artifacts: vec![CaskArtifact::Pkg(vec!["Installer.pkg".into()])],
+    ///     depends_on: CaskDependencies::default(),
+    ///     caveats: None,
+    ///     homepage: None,
+    ///     desc: None,
+    /// };
+    /// let pkgs = cask.pkg_artifacts();
+    /// assert_eq!(pkgs, vec!["Installer.pkg"]);
+    /// ```
     pub fn pkg_artifacts(&self) -> Vec<&str> {
         self.artifacts
             .iter()
@@ -63,7 +132,31 @@ impl Cask {
             .collect()
     }
 
-    /// Returns binary artifacts (symlinks to create in /usr/local/bin)
+    /// Collects binary artifact paths from the cask's artifacts.
+    ///
+    /// Returns a `Vec<&str>` with each binary artifact path (typically symlinks to create in `/usr/local/bin`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zb_core::cask::{Cask, CaskArtifact, CaskDependencies};
+    ///
+    /// let c = Cask {
+    ///     token: "my-app".into(),
+    ///     name: vec![],
+    ///     version: "1.0".into(),
+    ///     url: "https://example.com".into(),
+    ///     sha256: None,
+    ///     artifacts: vec![CaskArtifact::Binary(vec!["bin/foo".into(), "bin/bar".into()])],
+    ///     depends_on: CaskDependencies::default(),
+    ///     caveats: None,
+    ///     homepage: None,
+    ///     desc: None,
+    /// };
+    ///
+    /// let bins = c.binary_artifacts();
+    /// assert_eq!(bins, vec!["bin/foo", "bin/bar"]);
+    /// ```
     pub fn binary_artifacts(&self) -> Vec<&str> {
         self.artifacts
             .iter()

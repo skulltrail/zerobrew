@@ -9,6 +9,28 @@ struct DiagnosticResults {
     errors: Vec<String>,
 }
 
+/// Runs a sequence of system diagnostic checks for zerobrew and prints a human-readable report.
+///
+/// The function performs directory, database, store, symlink, permission, and PATH checks,
+/// aggregates warnings and errors, prints per-check status and a final summary, and never
+/// modifies system state beyond temporary permission test files used by the permission check.
+///
+/// Returns `Ok(())` when the diagnostic run completes; individual problems are reported via
+/// printed output and collected into the displayed summary (they are not returned as `Err`).
+///
+/// # Examples
+///
+/// ```
+/// // Assume `installer`, `root`, and `prefix` are available in your context.
+/// // `execute` prints a report and returns Ok when finished.
+/// # use std::path::Path;
+/// # use zb_cli::installer::Installer;
+/// # use zb_cli::commands::doctor::execute;
+/// let installer: Installer = unimplemented!();
+/// let root = Path::new("/usr/local/zerobrew");
+/// let prefix = Path::new("/usr/local");
+/// let _ = execute(&installer, root, prefix).unwrap();
+/// ```
 pub fn execute(installer: &Installer, root: &Path, prefix: &Path) -> Result<(), Error> {
     println!(
         "{} Checking system for potential problems...\n",
@@ -69,6 +91,29 @@ pub fn execute(installer: &Installer, root: &Path, prefix: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Checks that zerobrew's required directories exist and records any missing ones.
+///
+/// This function verifies presence of the standard zerobrew directories (root,
+/// root/store, root/cache, root/db, prefix, prefix/bin). For each missing
+/// directory it appends a descriptive warning to `results`.
+///
+/// # Parameters
+///
+/// - `root`: Filesystem path to the zerobrew root directory.
+/// - `prefix`: Installation prefix path.
+/// - `results`: Mutable diagnostics collector that receives a warning per missing directory.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// // Minimal illustrative example — in real tests use a temp directory.
+/// let root = Path::new("/nonexistent/zbroot");
+/// let prefix = Path::new("/nonexistent/zbprefix");
+/// let mut results = crate::commands::doctor::DiagnosticResults { warnings: Vec::new(), errors: Vec::new() };
+/// crate::commands::doctor::check_directories(root, prefix, &mut results);
+/// assert!(results.warnings.iter().any(|w| w.contains("Missing directory")));
+/// ```
 fn check_directories(root: &Path, prefix: &Path, results: &mut DiagnosticResults) {
     print!("Checking zerobrew directories...");
 
@@ -98,6 +143,25 @@ fn check_directories(root: &Path, prefix: &Path, results: &mut DiagnosticResults
     }
 }
 
+/// Checks the installed formulas database and records any integrity errors.
+///
+/// Prints a status line ("OK" with the number of formulas or "ERROR") to stdout.
+/// On failure, appends a descriptive error message to `results.errors`.
+///
+/// # Parameters
+///
+/// - `installer`: used to query the list of installed kegs.
+/// - `results`: collection where detected warnings and errors are recorded.
+///
+/// # Examples
+///
+/// ```
+/// # use zb_cli::commands::doctor::{check_database, DiagnosticResults};
+/// # use zb_core::installer::Installer;
+/// # let installer: Installer = unimplemented!();
+/// let mut results = DiagnosticResults::default();
+/// check_database(&installer, &mut results);
+/// ```
 fn check_database(installer: &Installer, results: &mut DiagnosticResults) {
     print!("Checking database integrity...");
 
@@ -112,6 +176,36 @@ fn check_database(installer: &Installer, results: &mut DiagnosticResults) {
     }
 }
 
+/// Verifies the integrity of the zerobrew store directory and records any issues.
+///
+/// This function checks whether the store directory exists, skips the check if it does not,
+/// enumerates installed packages via the provided installer, and records an error for each
+/// installed package that lacks a corresponding store entry. Findings are appended to
+/// `results.errors`. The function prints a brief status indicator (OK, SKIP, or ISSUES).
+///
+/// # Parameters
+///
+/// - `root` — Filesystem path to the zerobrew root directory (contains the `store` subdirectory).
+/// - `installer` — Installer used to obtain the list of installed packages.
+/// - `results` — Mutable accumulator for diagnostic warnings and errors; missing store entries
+///   are appended to `results.errors`.
+///
+/// # Examples
+///
+/// ```
+/// // Example (illustrative): create a mock installer that reports no installed packages
+/// // and run the check against a temporary root path.
+/// use std::path::Path;
+///
+/// struct MockInstaller;
+/// impl MockInstaller {
+///     fn list_installed(&self) -> Result<Vec<()>, ()> { Ok(vec![]) }
+/// }
+///
+/// // Assuming DiagnosticResults is available in scope:
+/// // let mut results = DiagnosticResults { warnings: vec![], errors: vec![] };
+/// // check_store(Path::new("/tmp/zerobrew"), &mock_installer, &mut results);
+/// ```
 fn check_store(root: &Path, installer: &Installer, results: &mut DiagnosticResults) {
     print!("Checking store integrity...");
 
@@ -163,6 +257,20 @@ fn check_store(root: &Path, installer: &Installer, results: &mut DiagnosticResul
     }
 }
 
+/// Checks for broken symbolic links inside `prefix/bin` and appends warnings for each broken link to `results`.
+///
+/// If `prefix/bin` does not exist the check is skipped.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+///
+/// // Assume DiagnosticResults and check_symlinks are in scope
+/// let mut results = DiagnosticResults { warnings: Vec::new(), errors: Vec::new() };
+/// check_symlinks(Path::new("/unlikely/to/exist/for/tests"), &mut results);
+/// assert!(results.warnings.is_empty());
+/// ```
 fn check_symlinks(prefix: &Path, results: &mut DiagnosticResults) {
     print!("Checking symlinks...");
 
@@ -210,6 +318,44 @@ fn check_symlinks(prefix: &Path, results: &mut DiagnosticResults) {
     }
 }
 
+/// Checks write permissions for the zerobrew root and the prefix's bin directory and records any issues.
+///
+/// If writing a temporary file to `root` or to `prefix/bin` (when it exists) fails, a warning describing
+/// the unreadable location is appended to `results.warnings`. Prints a per-step status ("OK" or "ISSUES") to stdout.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use std::fs;
+/// use std::env;
+///
+/// // Minimal DiagnosticResults clone for the example.
+/// #[derive(Default)]
+/// struct DiagnosticResults {
+///     warnings: Vec<String>,
+///     errors: Vec<String>,
+/// }
+///
+/// // Assume check_permissions is in scope.
+/// let tmp = env::temp_dir();
+/// let root = tmp.join("zb_example_root");
+/// let prefix = tmp.join("zb_example_prefix");
+///
+/// // Prepare directories
+/// let _ = fs::remove_dir_all(&root);
+/// let _ = fs::remove_dir_all(&prefix);
+/// fs::create_dir_all(&root).unwrap();
+/// fs::create_dir_all(prefix.join("bin")).unwrap();
+///
+/// let mut results = DiagnosticResults::default();
+/// // call the function (uncomment when check_permissions is available)
+/// // check_permissions(&root, &prefix, &mut results);
+///
+/// // cleanup
+/// let _ = fs::remove_dir_all(&root);
+/// let _ = fs::remove_dir_all(&prefix);
+/// ```
 fn check_permissions(root: &Path, prefix: &Path, results: &mut DiagnosticResults) {
     print!("Checking permissions...");
 
@@ -256,6 +402,22 @@ fn check_permissions(root: &Path, prefix: &Path, results: &mut DiagnosticResults
     }
 }
 
+/// Verifies whether the installation prefix's `bin` directory is present in the user's PATH and records a warning if it is not.
+///
+/// If the PATH environment variable is available and contains the prefix's `bin` directory (prefix/bin), this function prints an OK status. If PATH is available but does not contain prefix/bin, it prints NOT IN PATH and appends a warning to `results` containing a suggested export line to add to the user's shell profile. If PATH is unavailable, the check is skipped.
+///
+/// # Parameters
+///
+/// - `prefix`: Filesystem path to the installation prefix whose `bin` directory should be checked.
+/// - `results`: Mutable collector for diagnostic warnings and errors; a warning is appended when prefix/bin is not found in PATH.
+///
+/// # Examples
+///
+/// ```
+/// let mut results = DiagnosticResults { warnings: Vec::new(), errors: Vec::new() };
+/// check_path(std::path::Path::new("/usr/local"), &mut results);
+/// // After running, `results.warnings` may contain an entry suggesting to add "/usr/local/bin" to PATH.
+/// ```
 fn check_path(prefix: &Path, results: &mut DiagnosticResults) {
     print!("Checking PATH...");
 

@@ -9,6 +9,31 @@ pub struct OutdatedPackage {
     pub is_cask: bool,
 }
 
+/// Checks installed formulas and casks against the API and prints a summary of any outdated packages.
+///
+/// The function compares installed package versions to the latest versions obtained from the API,
+/// collects packages whose installed version differs from the API version, and prints either a
+/// message that all packages are up to date or a formatted list of outdated packages.
+///
+/// Parameters:
+/// - `installer`: installer used to list installed formulas.
+/// - `cask_installer`: optional installer used to list installed casks; when `None`, casks are not checked.
+/// - `api_client`: client used to fetch latest formula and cask metadata from the API.
+/// - `cask_only`: when `true`, skip checking formulas and only check casks (if a cask installer is provided).
+///
+/// # Returns
+///
+/// `Ok(())` on success, or an `Error` if listing installed packages or API lookups fail.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn try_main() -> Result<(), zb_core::Error> {
+/// // assume `installer`, `cask_installer`, and `api_client` are available and configured
+/// // execute(installer, Some(&cask_installer), &api_client, false).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn execute(
     installer: &mut Installer,
     cask_installer: Option<&CaskInstaller>,

@@ -29,6 +29,7 @@ sha2 = "0.10.9"
 walkdir = "2.5.0"
 fs4 = "0.13.1"
 libc = "0.2.180"
+zip = "2.2"
 
 # Dev dependencies
 tempfile = "3"

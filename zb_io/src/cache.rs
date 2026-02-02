@@ -55,6 +55,28 @@ impl ApiCache {
             .ok()
     }
 
+    /// Stores or updates a cache entry for the given URL and records the current UNIX timestamp as `cached_at`.
+    ///
+    /// The entry's `etag`, `last_modified`, and `body` are persisted; existing rows for the same URL are replaced.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, or a `rusqlite::Error` if the database operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = ApiCache::in_memory().unwrap();
+    /// let entry = CacheEntry {
+    ///     etag: Some("abc123".to_string()),
+    ///     last_modified: None,
+    ///     body: "{\"key\": \"value\"}".to_string(),
+    /// };
+    /// cache.put("https://example.com/resource", &entry).unwrap();
+    /// let fetched = cache.get("https://example.com/resource").unwrap().unwrap();
+    /// assert_eq!(fetched.etag, Some("abc123".to_string()));
+    /// assert_eq!(fetched.body, "{\"key\": \"value\"}");
+    /// ```
     pub fn put(&self, url: &str, entry: &CacheEntry) -> Result<(), rusqlite::Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -66,6 +88,24 @@ impl ApiCache {
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![url, entry.etag, entry.last_modified, entry.body, now],
         )?;
+        Ok(())
+    }
+
+    /// Removes all entries from the cache.
+    ///
+    /// Clears every row in the `api_cache` table so subsequent lookups will return `None` until new entries are stored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = ApiCache::in_memory().unwrap();
+    /// let entry = CacheEntry { etag: Some("e".into()), last_modified: None, body: "{}".into() };
+    /// cache.put("https://example.com", &entry).unwrap();
+    /// cache.clear().unwrap();
+    /// assert!(cache.get("https://example.com").unwrap().is_none());
+    /// ```
+    pub fn clear(&self) -> Result<(), rusqlite::Error> {
+        self.conn.execute("DELETE FROM api_cache", [])?;
         Ok(())
     }
 }

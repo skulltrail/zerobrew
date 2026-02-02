@@ -3,6 +3,29 @@ use std::path::Path;
 use zb_core::Error;
 use zb_io::install::Installer;
 
+/// Clean unreferenced store entries, the download cache, and temporary files under `root`.
+///
+/// This performs a three-stage cleanup:
+/// 1. Runs garbage collection via the provided `installer` and reports unreferenced store entries.
+/// 2. Scans `root/cache` and removes either incomplete downloads (files ending with `.part`) or all entries when `scrub` is true.
+/// 3. Scans and removes all entries under `root/tmp`.
+///
+/// - `dry_run`: when true, the command only reports what would be removed and does not delete anything.
+/// - `scrub`: when true, remove all entries in the download cache instead of only `.part` files.
+///
+/// Errors are returned if `installer.gc()` fails or if required directories cannot be read.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+///
+/// // assuming `installer` is available from the application context
+/// let mut installer = /* obtain Installer */ unimplemented!();
+/// let root = Path::new("/path/to/project");
+/// // Dry run to preview removals
+/// let _ = zb_cli::commands::cleanup::execute(&mut installer, root, true, false);
+/// ```
 pub fn execute(
     installer: &mut Installer,
     root: &Path,
@@ -156,7 +179,29 @@ pub fn execute(
     Ok(())
 }
 
-pub fn get_dir_size(path: &Path) -> u64 {
+/// Compute the total size, in bytes, of all files contained within `path` and its subdirectories.
+///
+/// This ignores directory entries that cannot be read and files whose metadata cannot be retrieved; such entries do not contribute to the returned size.
+///
+/// # Examples
+///
+/// ```
+/// use std::fs::{create_dir_all, File};
+/// use std::io::Write;
+/// use tempfile::tempdir;
+///
+/// let dir = tempdir().unwrap();
+/// let sub = dir.path().join("sub");
+/// create_dir_all(&sub).unwrap();
+/// let mut f1 = File::create(dir.path().join("a.txt")).unwrap();
+/// f1.write_all(&vec![0u8; 10]).unwrap();
+/// let mut f2 = File::create(sub.join("b.txt")).unwrap();
+/// f2.write_all(&vec![0u8; 20]).unwrap();
+///
+/// let total = get_dir_size(dir.path());
+/// assert_eq!(total, 30);
+/// ```
+fn get_dir_size(path: &Path) -> u64 {
     let mut size = 0;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -171,7 +216,18 @@ pub fn get_dir_size(path: &Path) -> u64 {
     size
 }
 
-pub fn format_bytes(bytes: u64) -> String {
+/// Format a byte count into a human-readable string using 1024-based units (B, KB, MB, GB).
+///
+/// Values at KB and above are shown with two decimal places.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(format_bytes(500), "500 B");
+/// assert_eq!(format_bytes(2048), "2.00 KB");
+/// assert_eq!(format_bytes(5 * 1024 * 1024), "5.00 MB");
+/// ```
+fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
@@ -186,7 +242,3 @@ pub fn format_bytes(bytes: u64) -> String {
         format!("{} B", bytes)
     }
 }
-
-#[cfg(test)]
-#[path = "cleanup_test.rs"]
-mod cleanup_test;

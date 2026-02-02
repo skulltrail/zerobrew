@@ -23,6 +23,7 @@ tokio.workspace = true
 fs4.workspace = true
 walkdir.workspace = true
 xz2.workspace = true
+zip.workspace = true
 zstd.workspace = true
 zb_core = { path = "../zb_core" }
 arwen = "0.0.5"

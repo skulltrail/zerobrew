@@ -1110,7 +1110,20 @@ impl ParallelDownloader {
         self.downloader.remove_blob(sha256)
     }
 
-    /// Download a single file (used for retries after corruption)
+    /// Download a single requested file and return the local blob path.
+    ///
+    /// This method deduplicates concurrent downloads of the same SHA-256, honors the parallel downloader's concurrency limits, and returns the path to the stored blob when the download completes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # use tokio;
+    /// # async fn _example(pd: &crate::ParallelDownloader) -> PathBuf {
+    /// let req = crate::DownloadRequest { url: "https://example.com/file".into(), sha256: "deadbeef".into(), name: None };
+    /// pd.download_single(req, None).await.unwrap()
+    /// # }
+    /// ```
     pub async fn download_single(
         &self,
         request: DownloadRequest,
@@ -1126,6 +1139,157 @@ impl ParallelDownloader {
         .await
     }
 
+    /// Download a file from the given URL into the blob cache without validating its SHA-256.
+    ///
+    /// This emits progress callbacks (DownloadStarted, repeated DownloadProgress updates, and DownloadCompleted)
+    /// when a `progress` callback is provided. The stored SHA-256 value in the returned `DownloadResult`
+    /// is derived from the SHA-256 hash of the URL string (used as a unique key for casks marked "no_check").
+    /// Progress callbacks report `total_bytes: None` because the total size is not pre-validated here.
+    ///
+    /// # Returns
+    ///
+    /// `DownloadResult` containing:
+    /// - `name`: the provided request name,
+    /// - `sha256`: hex SHA-256 of the request URL,
+    /// - `blob_path`: filesystem path to the committed blob,
+    /// - `index`: always `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use zb_io::download::{ParallelDownloader, DownloadRequest};
+    /// # use zb_io::progress::DownloadProgressCallback;
+    /// # async fn example(parallel_downloader: &ParallelDownloader, request: DownloadRequest) {
+    /// let result = parallel_downloader
+    ///     .download_single_no_verify(request, None)
+    ///     .await
+    ///     .unwrap();
+    /// println!("Downloaded {} -> {:?}", result.name, result.blob_path);
+    /// # }
+    /// ```
+    pub async fn download_single_no_verify(
+        &self,
+        request: DownloadRequest,
+        progress: Option<DownloadProgressCallback>,
+    ) -> Result<DownloadResult, Error> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("semaphore error: {e}"),
+            })?;
+
+        let name = request.name.clone();
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::DownloadStarted {
+                name: name.clone(),
+                total_bytes: None,
+            });
+        }
+
+        let response = self
+            .downloader
+            .client
+            .get(&request.url)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkFailure {
+                message: e.to_string(),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(Error::NetworkFailure {
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        // Generate a unique key based on URL hash for casks without SHA
+        let url_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(request.url.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let mut writer = self
+            .downloader
+            .blob_cache
+            .start_write(&url_hash)
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("failed to create blob writer: {e}"),
+            })?;
+
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::NetworkFailure {
+                message: format!("failed to read chunk: {e}"),
+            })?;
+
+            downloaded += chunk.len() as u64;
+            writer
+                .write_all(&chunk)
+                .map_err(|e| Error::NetworkFailure {
+                    message: format!("failed to write chunk: {e}"),
+                })?;
+
+            if let Some(cb) = &progress {
+                cb(InstallProgress::DownloadProgress {
+                    name: name.clone(),
+                    downloaded,
+                    total_bytes: None,
+                });
+            }
+        }
+
+        writer.flush().map_err(|e| Error::NetworkFailure {
+            message: format!("failed to flush download: {e}"),
+        })?;
+
+        let blob_path = writer.commit()?;
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::DownloadCompleted {
+                name: name.clone(),
+                total_bytes: downloaded,
+            });
+        }
+
+        Ok(DownloadResult {
+            name,
+            sha256: url_hash,
+            blob_path,
+            index: 0,
+        })
+    }
+
+    /// Downloads multiple requests and returns the stored blob paths in the same order as the input.
+    ///
+    /// Each `DownloadRequest` is downloaded (or retrieved from cache) and the resulting file paths are returned
+    /// in a Vec corresponding index-for-index with the provided requests. Progress callbacks (if needed) can be
+    /// supplied to `download_all_with_progress`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Vec<PathBuf>)` containing the blob paths for each request in the same order as `requests`, or `Err(Error)`
+    /// if any download fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # use zb_io::download::{ParallelDownloader, DownloadRequest};
+    /// # async fn example(downloader: &ParallelDownloader) -> Result<(), Box<dyn std::error::Error>> {
+    /// let requests = vec![
+    ///     DownloadRequest { url: "https://example.com/a".into(), sha256: "abc".into(), name: Some("a".into()) },
+    ///     DownloadRequest { url: "https://example.com/b".into(), sha256: "def".into(), name: Some("b".into()) },
+    /// ];
+    /// let paths: Vec<PathBuf> = downloader.download_all(requests).await?;
+    /// assert_eq!(paths.len(), 2);
+    /// # Ok(()) }
+    /// ```
     pub async fn download_all(
         &self,
         requests: Vec<DownloadRequest>,

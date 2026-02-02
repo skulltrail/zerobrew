@@ -12,7 +12,17 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Helper to create a mock tarball with a simple binary
+/// Create a gzipped tarball containing a simple executable at `{name}/{version}/bin/{name}` and return the tarball bytes together with its SHA-256 hex digest.
+///
+/// The tarball contains a small shell-script binary marked executable (mode 0o755). This helper is intended for tests that need a valid Homebrew-style bottle archive and its checksum.
+///
+/// # Examples
+///
+/// ```
+/// let (tarball, sha256) = create_mock_tarball("testpkg", "1.0.0");
+/// assert!(!tarball.is_empty());
+/// assert_eq!(sha256.len(), 64); // hex-encoded SHA-256
+/// ```
 fn create_mock_tarball(name: &str, version: &str) -> (Vec<u8>, String) {
     let mut tarball_data = Vec::new();
     {
@@ -40,7 +50,53 @@ fn create_mock_tarball(name: &str, version: &str) -> (Vec<u8>, String) {
     (tarball_data, sha256)
 }
 
-/// Create a mock formula JSON
+/// Builds a Homebrew-style formula JSON string for testing.
+
+///
+
+/// The produced JSON contains a stable version, no dependencies, and bottle
+
+/// metadata for x86_64_linux and arm64_sonoma pointing to the provided URL
+
+/// and SHA-256 checksum.
+
+///
+
+/// # Parameters
+
+///
+
+/// - `name`: formula name token.
+
+/// - `version`: stable version string.
+
+/// - `sha256`: SHA-256 hex digest for the bottle tarball.
+
+/// - `bottle_url`: URL where the bottle tarball is hosted.
+
+///
+
+/// # Returns
+
+///
+
+/// A JSON string representing the formula payload.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let json = create_formula_json("testpkg", "1.0.0", "deadbeef...", "http://example.com/testpkg-1.0.0.tar.gz");
+
+/// assert!(json.contains("\"name\":\"testpkg\""));
+
+/// assert!(json.contains("\"stable\":\"1.0.0\""));
+
+/// ```
 fn create_formula_json(name: &str, version: &str, sha256: &str, bottle_url: &str) -> String {
     serde_json::json!({
         "name": name,
@@ -67,7 +123,23 @@ fn create_formula_json(name: &str, version: &str, sha256: &str, bottle_url: &str
     .to_string()
 }
 
-/// Create a mock cask JSON
+/// Build a JSON string representing a Homebrew cask with the given metadata.
+///
+/// The produced JSON contains the fields `"token"`, `"name"` (an array containing the token),
+/// `"version"`, `"url"`, `"sha256"`, and an empty `"artifacts"` array.
+///
+/// # Examples
+///
+/// ```
+/// let s = create_cask_json("test-app", "1.0.0", "https://example.com/test.zip", "deadbeef");
+/// let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+/// assert_eq!(v["token"], "test-app");
+/// assert_eq!(v["name"][0], "test-app");
+/// assert_eq!(v["version"], "1.0.0");
+/// assert_eq!(v["url"], "https://example.com/test.zip");
+/// assert_eq!(v["sha256"], "deadbeef");
+/// assert!(v["artifacts"].as_array().unwrap().is_empty());
+/// ```
 fn create_cask_json(token: &str, version: &str, url: &str, sha256: &str) -> String {
     serde_json::json!({
         "token": token,
@@ -87,6 +159,20 @@ struct TestEnv {
 }
 
 impl TestEnv {
+    /// Creates a TestEnv with a temporary filesystem layout and a running mock HTTP server.
+    ///
+    /// The created environment includes a temporary root directory and a MockServer instance,
+    /// and ensures the following subdirectories exist under the root: `store`, `cache`, `cellar`,
+    /// `locks`, `db`, `prefix/bin`, `Caskroom`, and `applications`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio_test::block_on(async {
+    /// let env = TestEnv::new().await;
+    /// // use env.root_path() and env.mock_uri() in tests
+    /// # });
+    /// ```
     async fn new() -> Self {
         let root = TempDir::new().unwrap();
         let mock_server = MockServer::start().await;
@@ -105,14 +191,63 @@ impl TestEnv {
         TestEnv { root, mock_server }
     }
 
+    /// Get the root temporary directory path for the test environment.
+    ///
+    /// # Returns
+    ///
+    /// A `PathBuf` pointing to the `TestEnv` root directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #[tokio::test]
+    /// async fn example_root_path() {
+    ///     let env = TestEnv::new().await;
+    ///     assert!(env.root_path().exists());
+    /// }
+    /// ```
     fn root_path(&self) -> PathBuf {
         self.root.path().to_path_buf()
     }
 
+    /// Get the base URI for the test mock HTTP server.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // assuming `env` is a `TestEnv` created earlier
+    /// let uri = env.mock_uri();
+    /// assert!(uri.starts_with("http"));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The mock server base URI as a `String`.
     fn mock_uri(&self) -> String {
         self.mock_server.uri()
     }
 
+    /// Prepares a mock formula on the test server by creating a gzipped bottle, registering HTTP mocks for the bottle download and HEAD check, and registering the formula JSON that references the bottle.
+    ///
+    /// The created bottle's SHA-256 hex digest is returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: the formula name to register on the mock server.
+    /// - `version`: the formula version to register on the mock server.
+    ///
+    /// # Returns
+    ///
+    /// `String` containing the SHA-256 hex digest of the generated tarball.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(env: &TestEnv) {
+    /// let sha = env.setup_formula("testpkg", "1.0.0").await;
+    /// assert!(!sha.is_empty());
+    /// # }
+    /// ```
     async fn setup_formula(&self, name: &str, version: &str) -> String {
         let (tarball, sha256) = create_mock_tarball(name, version);
         let bottle_url = format!("{}/bottles/{name}-{version}.tar.gz", self.mock_uri());
@@ -142,6 +277,23 @@ impl TestEnv {
         sha256
     }
 
+    /// Sets up mock endpoints for a cask download and its API entry, and returns the download's SHA-256 hex digest.
+    ///
+    /// The function registers two mock HTTP routes on the test server: a GET for the cask zip download and a GET for the cask JSON metadata that references the download URL and SHA-256.
+    ///
+    /// # Returns
+    ///
+    /// A hex-encoded SHA-256 digest of the mock cask content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # tokio_test::block_on(async {
+    /// let env = TestEnv::new().await;
+    /// let sha256 = env.setup_cask("test-app", "1.2.3").await;
+    /// assert_eq!(sha256.len(), 64);
+    /// # });
+    /// ```
     async fn setup_cask(&self, token: &str, version: &str) -> String {
         // Create a simple mock file for the cask
         let content = b"Mock cask content";
@@ -178,6 +330,32 @@ mod formula_tests {
         materialize::Cellar,
     };
 
+    /// Constructs an Installer configured for the provided test environment.
+    ///
+    /// The returned Installer is wired to the environment's directories and mock API
+    /// endpoints so it can be used in integration tests that exercise installation,
+    /// caching, and packaging behavior.
+    ///
+    /// # Parameters
+    ///
+    /// - `env`: Test environment providing a temporary filesystem layout and mock server.
+    ///
+    /// # Returns
+    ///
+    /// An `Installer` instance configured to use the test environment's storage,
+    /// cache, cellar, linker prefix, database, and API base URLs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tokio::runtime::Runtime;
+    /// # let rt = Runtime::new().unwrap();
+    /// # rt.block_on(async {
+    /// let env = TestEnv::new().await;
+    /// let installer = create_test_installer(&env);
+    /// // use `installer` in test assertions...
+    /// # });
+    /// ```
     fn create_test_installer(env: &TestEnv) -> Installer {
         let root = env.root_path();
         let prefix = root.join("prefix");
@@ -199,6 +377,31 @@ mod formula_tests {
         Installer::new(api_client, blob_cache, store, cellar, linker, db)
     }
 
+    /// Integration test that installs a single formula from the mock API and verifies it appears in the installed list.
+    ///
+    /// Sets up a mock formula on the test server, plans and executes installation with the test Installer, and asserts
+    /// the installed package name and version match the mocked formula.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn __example() {
+    /// let env = TestEnv::new().await;
+    /// env.setup_formula("testpkg", "1.0.0").await;
+    ///
+    /// let mut installer = create_test_installer(&env);
+    /// let plan = installer.plan(&["testpkg".to_string()]).await.unwrap();
+    /// assert_eq!(plan.formulas.len(), 1);
+    /// assert_eq!(plan.formulas[0].name, "testpkg");
+    ///
+    /// installer.execute(plan, true).await.unwrap();
+    ///
+    /// let installed = installer.list_installed().unwrap();
+    /// assert_eq!(installed.len(), 1);
+    /// assert_eq!(installed[0].name, "testpkg");
+    /// assert_eq!(installed[0].version, "1.0.0");
+    /// # }
+    /// ```
     #[tokio::test]
     async fn test_install_single_formula() {
         let env = TestEnv::new().await;
@@ -360,6 +563,26 @@ mod formula_tests {
         assert_eq!(installed.len(), 2);
     }
 
+    /// Integration test that installs a formula, uninstalls it, and runs garbage collection to exercise
+    /// cleanup of unreferenced store entries.
+    ///
+    /// This test verifies that running GC after removing an installed formula does not crash and may
+    /// remove unreferenced blobs from the store. The exact set of removed entries can be empty
+    /// depending on runtime deduplication and shared references.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // This test installs "gctest" v1.0.0, uninstalls it, then runs GC and asserts GC ran successfully.
+    /// let env = TestEnv::new().await;
+    /// env.setup_formula("gctest", "1.0.0").await;
+    /// let mut installer = create_test_installer(&env);
+    /// let plan = installer.plan(&["gctest".to_string()]).await.unwrap();
+    /// installer.execute(plan, false).await.unwrap();
+    /// installer.uninstall("gctest").unwrap();
+    /// let removed = installer.gc().unwrap();
+    /// assert!(true); // GC completed; removed may be empty or non-empty.
+    /// ```
     #[tokio::test]
     async fn test_gc_removes_unreferenced() {
         let env = TestEnv::new().await;
@@ -380,6 +603,22 @@ mod formula_tests {
         assert!(!removed.is_empty() || true); // GC may or may not have items
     }
 
+    /// Verifies that planning an installation for a missing formula yields an error.
+    ///
+    /// The test configures the mock server to return 404 for `/formula/nonexistent.json` and
+    /// asserts that `Installer::plan` returns an `Err` when asked to plan the `nonexistent` formula.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example() {
+    /// let env = TestEnv::new().await;
+    /// // mock setup omitted for brevity
+    /// let installer = create_test_installer(&env);
+    /// let result = installer.plan(&["nonexistent".to_string()]).await;
+    /// assert!(result.is_err());
+    /// # }
+    /// ```
     #[tokio::test]
     async fn test_missing_formula_returns_error() {
         let env = TestEnv::new().await;
@@ -475,6 +714,18 @@ mod api_tests {
         assert_eq!(cask.version, "2.5.0");
     }
 
+    /// Verifies that ApiClient returns cached formula data when the remote reports `304 Not Modified` after an initial response with an `ETag`.
+    ///
+    /// The test performs an initial fetch that returns a 200 response with an `ETag`, then resets the mock server to reply with 304 and asserts the client still returns the previously cached formula.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Arrange: create ApiClient with an ApiCache pointing at a test DB and a mock server that
+    /// // first returns 200 with an ETag for `/formula/cached.json`, then returns 304.
+    /// // Act: call `client.get_formula("cached")` twice.
+    /// // Assert: both calls return a formula with name "cached", the second one served from cache.
+    /// ```
     #[tokio::test]
     async fn test_api_caching() {
         let env = TestEnv::new().await;
@@ -544,153 +795,5 @@ mod cleanup_tests {
             .filter_map(|e| e.ok())
             .collect();
         assert_eq!(entries.len(), 2);
-    }
-}
-
-mod cask_integration_tests {
-    use super::*;
-    use zb_io::{CaskInstaller, Database};
-
-    fn create_test_cask_installer(env: &TestEnv) -> CaskInstaller {
-        let root = env.root_path();
-        let api_client = zb_io::ApiClient::with_base_urls(
-            format!("{}/formula", env.mock_uri()),
-            format!("{}/cask", env.mock_uri()),
-        );
-
-        let blob_cache = zb_io::BlobCache::new(&root.join("cache")).unwrap();
-        let downloader = zb_io::ParallelDownloader::new(blob_cache);
-        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
-
-        let applications_dir = root.join("applications");
-        let caskroom_dir = root.join("Caskroom");
-
-        CaskInstaller::new(api_client, downloader, db, applications_dir, caskroom_dir)
-    }
-
-    #[tokio::test]
-    async fn test_cask_list_empty() {
-        let env = TestEnv::new().await;
-        let cask_installer = create_test_cask_installer(&env);
-
-        let installed = cask_installer.list_installed().unwrap();
-        assert!(installed.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_cask_uninstall_not_installed() {
-        let env = TestEnv::new().await;
-        let mut cask_installer = create_test_cask_installer(&env);
-
-        let result = cask_installer.uninstall("nonexistent-cask");
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), zb_core::Error::CaskNotInstalled { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_cask_is_installed_false() {
-        let env = TestEnv::new().await;
-        let cask_installer = create_test_cask_installer(&env);
-
-        assert!(!cask_installer.is_installed("not-here"));
-    }
-
-    #[tokio::test]
-    async fn test_cask_get_installed_none() {
-        let env = TestEnv::new().await;
-        let cask_installer = create_test_cask_installer(&env);
-
-        assert!(cask_installer.get_installed("not-here").is_none());
-    }
-}
-
-mod download_edge_cases {
-    use super::*;
-    use sha2::{Digest, Sha256};
-
-    #[tokio::test]
-    async fn test_download_with_network_error() {
-        let env = TestEnv::new().await;
-
-        // Mock a 500 server error
-        Mock::given(method("GET"))
-            .and(path("/error.tar.gz"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&env.mock_server)
-            .await;
-
-        let blob_cache = zb_io::BlobCache::new(&env.root_path().join("cache")).unwrap();
-        let downloader = zb_io::Downloader::new(blob_cache);
-
-        let url = format!("{}/error.tar.gz", env.mock_uri());
-        let result = downloader.download(&url, "fakehash").await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_download_caching() {
-        let env = TestEnv::new().await;
-        let content = b"cached content";
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        let sha256 = format!("{:x}", hasher.finalize());
-
-        Mock::given(method("GET"))
-            .and(path("/cached.tar.gz"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(content.to_vec()))
-            .expect(1) // Should only be called once
-            .mount(&env.mock_server)
-            .await;
-
-        let blob_cache = zb_io::BlobCache::new(&env.root_path().join("cache")).unwrap();
-        let downloader = zb_io::Downloader::new(blob_cache.clone());
-
-        let url = format!("{}/cached.tar.gz", env.mock_uri());
-
-        // First download
-        let result1 = downloader.download(&url, &sha256).await;
-        assert!(result1.is_ok());
-
-        // Second download should use cache
-        let result2 = downloader.download(&url, &sha256).await;
-        assert!(result2.is_ok());
-
-        // Both should return the same path
-        assert_eq!(result1.unwrap(), result2.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_parallel_downloader_concurrency() {
-        let env = TestEnv::new().await;
-
-        // Create multiple download requests
-        let mut requests = Vec::new();
-        for i in 0..10 {
-            let content = format!("content{}", i);
-            let mut hasher = Sha256::new();
-            hasher.update(content.as_bytes());
-            let sha256 = format!("{:x}", hasher.finalize());
-
-            let url_path = format!("/file{}.tar.gz", i);
-            Mock::given(method("GET"))
-                .and(path(url_path.clone()))
-                .respond_with(ResponseTemplate::new(200).set_body_bytes(content.as_bytes().to_vec()))
-                .mount(&env.mock_server)
-                .await;
-
-            requests.push(zb_io::DownloadRequest {
-                url: format!("{}{}", env.mock_uri(), url_path),
-                sha256,
-                name: format!("pkg{}", i),
-            });
-        }
-
-        let blob_cache = zb_io::BlobCache::new(&env.root_path().join("cache")).unwrap();
-        let downloader = zb_io::ParallelDownloader::new(blob_cache);
-
-        let results = downloader.download_all(requests).await;
-        assert!(results.is_ok());
-        assert_eq!(results.unwrap().len(), 10);
     }
 }

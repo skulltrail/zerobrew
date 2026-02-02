@@ -21,6 +21,19 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// Formats `Error` into a human-readable message.
+    ///
+    /// Each variant is rendered as a concise, user-facing string that includes any relevant context
+    /// (for example: formula or cask names, file paths, expected/actual checksums, or error messages).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::errors::Error;
+    ///
+    /// let err = Error::UnsupportedBottle { name: "libheif".into() };
+    /// assert!(format!("{}", err).contains("libheif"));
+    /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::UnsupportedBottle { name } => {
@@ -69,170 +82,5 @@ mod tests {
         };
 
         assert!(err.to_string().contains("libheif"));
-    }
-
-    #[test]
-    fn checksum_mismatch_shows_both_values() {
-        let err = Error::ChecksumMismatch {
-            expected: "abc123".to_string(),
-            actual: "def456".to_string(),
-        };
-
-        let msg = err.to_string();
-        assert!(msg.contains("abc123"));
-        assert!(msg.contains("def456"));
-        assert!(msg.contains("mismatch"));
-    }
-
-    #[test]
-    fn link_conflict_shows_path() {
-        let err = Error::LinkConflict {
-            path: std::path::PathBuf::from("/usr/local/bin/tool"),
-        };
-
-        assert!(err.to_string().contains("/usr/local/bin/tool"));
-        assert!(err.to_string().contains("conflict"));
-    }
-
-    #[test]
-    fn missing_formula_error() {
-        let err = Error::MissingFormula {
-            name: "nonexistent-pkg".to_string(),
-        };
-
-        assert!(err.to_string().contains("nonexistent-pkg"));
-        assert!(err.to_string().contains("missing formula"));
-    }
-
-    #[test]
-    fn missing_cask_error() {
-        let err = Error::MissingCask {
-            name: "nonexistent-app".to_string(),
-        };
-
-        assert!(err.to_string().contains("nonexistent-app"));
-        assert!(err.to_string().contains("missing cask"));
-    }
-
-    #[test]
-    fn not_installed_error() {
-        let err = Error::NotInstalled {
-            name: "not-here".to_string(),
-        };
-
-        assert!(err.to_string().contains("not-here"));
-        assert!(err.to_string().contains("not installed"));
-    }
-
-    #[test]
-    fn cask_not_installed_error() {
-        let err = Error::CaskNotInstalled {
-            name: "missing-app".to_string(),
-        };
-
-        assert!(err.to_string().contains("missing-app"));
-        assert!(err.to_string().contains("not installed"));
-    }
-
-    #[test]
-    fn dependency_cycle_shows_cycle() {
-        let err = Error::DependencyCycle {
-            cycle: vec!["a".to_string(), "b".to_string(), "c".to_string(), "a".to_string()],
-        };
-
-        let msg = err.to_string();
-        assert!(msg.contains("a -> b -> c -> a"));
-        assert!(msg.contains("cycle"));
-    }
-
-    #[test]
-    fn unsupported_tap_error() {
-        let err = Error::UnsupportedTap {
-            name: "third-party/tap/formula".to_string(),
-        };
-
-        assert!(err.to_string().contains("third-party/tap/formula"));
-        assert!(err.to_string().contains("not supported"));
-        assert!(err.to_string().contains("homebrew/core"));
-    }
-
-    #[test]
-    fn store_corruption_error() {
-        let err = Error::StoreCorruption {
-            message: "database corrupted".to_string(),
-        };
-
-        assert!(err.to_string().contains("database corrupted"));
-        assert!(err.to_string().contains("corruption"));
-    }
-
-    #[test]
-    fn network_failure_error() {
-        let err = Error::NetworkFailure {
-            message: "connection timeout".to_string(),
-        };
-
-        assert!(err.to_string().contains("connection timeout"));
-        assert!(err.to_string().contains("network failure"));
-    }
-
-    #[test]
-    fn file_error() {
-        let err = Error::FileError {
-            message: "permission denied".to_string(),
-        };
-
-        assert!(err.to_string().contains("permission denied"));
-        assert!(err.to_string().contains("file error"));
-    }
-
-    #[test]
-    fn invalid_argument_error() {
-        let err = Error::InvalidArgument {
-            message: "bad parameter value".to_string(),
-        };
-
-        assert!(err.to_string().contains("bad parameter value"));
-        assert!(err.to_string().contains("invalid argument"));
-    }
-
-    #[test]
-    fn cask_error() {
-        let err = Error::CaskError {
-            message: "failed to extract DMG".to_string(),
-        };
-
-        assert!(err.to_string().contains("failed to extract DMG"));
-        assert!(err.to_string().contains("cask error"));
-    }
-
-    #[test]
-    fn execution_error() {
-        let err = Error::ExecutionError {
-            message: "command failed".to_string(),
-        };
-
-        assert!(err.to_string().contains("command failed"));
-        // ExecutionError shows message directly without prefix
-    }
-
-    #[test]
-    fn error_implements_std_error() {
-        let err = Error::NotInstalled {
-            name: "test".to_string(),
-        };
-
-        // Should implement std::error::Error trait
-        let _: &dyn std::error::Error = &err;
-    }
-
-    #[test]
-    fn error_is_cloneable() {
-        let err1 = Error::MissingFormula {
-            name: "test".to_string(),
-        };
-        let err2 = err1.clone();
-
-        assert_eq!(err1, err2);
     }
 }

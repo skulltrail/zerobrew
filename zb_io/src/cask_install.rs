@@ -22,6 +22,15 @@ pub struct CaskInstallResult {
 }
 
 impl CaskInstaller {
+    /// Creates a CaskInstaller configured with the given API client, downloader, database, and filesystem paths.
+    ///
+    /// The returned installer will use the provided ApiClient to fetch cask metadata, the ParallelDownloader to fetch artifacts, the Database for persistence, and will place applications and caskroom contents at the supplied paths.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let installer = CaskInstaller::new(api_client, downloader, db, PathBuf::from("/Applications"), PathBuf::from("/path/to/Caskroom"));
+    /// ```
     pub fn new(
         api_client: ApiClient,
         downloader: ParallelDownloader,
@@ -38,12 +47,45 @@ impl CaskInstaller {
         }
     }
 
-    /// Fetch cask metadata from API
+    /// Retrieve metadata for a cask identified by name.
+    ///
+    /// On success returns a `Cask` containing the cask's metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(installer: &crate::cask_install::CaskInstaller) {
+    /// let cask = installer.get_cask("spotify").await.unwrap();
+    /// println!("{}", cask.token);
+    /// # }
+    /// ```
     pub async fn get_cask(&self, name: &str) -> Result<Cask, Error> {
         self.api_client.get_cask(name).await
     }
 
-    /// Install a cask
+    /// Install a cask by name into the caskroom and, when applicable, link its app bundle into the Applications directory.
+    ///
+    /// This fetches the cask metadata, downloads and verifies (when a checksum is provided) the artifact, extracts or copies the packaged app or installer into a cask-specific directory under the caskroom, creates a symlink to a discovered `.app` bundle inside the configured Applications directory, and records the installation in the database. The optional `progress` callback, when provided, is invoked with InstallProgress events throughout the operation.
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: The cask identifier or token to install.
+    /// - `progress`: Optional callback invoked with `InstallProgress` events to report download, unpack, link, and install stages.
+    ///
+    /// # Returns
+    ///
+    /// A `CaskInstallResult` with `installed` equal to 1 when a new installation was performed, or 0 if the same version was already installed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # async fn example(installer: &mut zb_io::cask_install::CaskInstaller) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = installer.install("example-cask", None).await?;
+    /// assert!(result.installed <= 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn install(
         &mut self,
         name: &str,
@@ -171,7 +213,33 @@ impl CaskInstaller {
         Ok(CaskInstallResult { installed: 1 })
     }
 
-    /// Extract cask artifact based on file type
+    /// Extracts a downloaded cask artifact into `dest_dir` according to the artifact's file type.
+    ///
+    /// The function chooses an extraction or handling strategy based on the cask URL:
+    /// - `.dmg`: delegate to DMG extraction (macOS only).
+    /// - `.zip`, `.app.zip`, tarballs (`.tar.gz` / `.tgz`): extract archive and attempt to locate an `.app` bundle in `dest_dir`.
+    /// - `.pkg`: copy the package into `dest_dir` as `<token>.pkg`.
+    /// - other/unknown formats: copy the artifact into `dest_dir` using the filename from the URL.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some(name))` when an app bundle name or package filename was produced and placed under `dest_dir`.
+    /// `Ok(None)` when the artifact was copied but no app bundle name applies.
+    /// `Err(...)` if extraction or file operations fail.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::Path;
+    /// # async fn example(installer: &crate::CaskInstaller, cask: crate::Cask, blob: &Path, dest: &Path) {
+    /// let result = installer.extract_cask(&cask, blob, dest).await;
+    /// match result {
+    ///     Ok(Some(name)) => println!("Installed artifact named: {}", name),
+    ///     Ok(None) => println!("Artifact copied to dest without an app bundle"),
+    ///     Err(e) => eprintln!("Extraction failed: {:?}", e),
+    /// }
+    /// # }
+    /// ```
     async fn extract_cask(
         &self,
         cask: &Cask,
@@ -219,7 +287,37 @@ impl CaskInstaller {
         }
     }
 
-    /// Extract DMG file (macOS only)
+    /// Extracts a DMG and, if it contains an `.app` bundle, copies that bundle into `dest_dir`.
+    ///
+    /// The function mounts the DMG using `hdiutil`, locates the first `.app` bundle in the mounted
+    /// image, copies it into `dest_dir`, then unmounts and cleans up the mount point. If an `.app`
+    /// bundle was copied, its directory name is returned.
+    ///
+    /// # Returns
+    ///
+    /// `Some(app_name)` if an `.app` bundle was found in the DMG and copied into `dest_dir`,
+    /// `None` if no `.app` bundle was found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Error::FileError` when creating the temporary mount point or copying the app
+    /// bundle fails. Returns an `Error::CaskError` when mounting the DMG via `hdiutil` fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Example usage (macOS only):
+    /// // let installer: CaskInstaller = /* constructed elsewhere */;
+    /// // let cask: Cask = /* fetched from API */;
+    /// // let result = tokio::runtime::Runtime::new()
+    /// //     .unwrap()
+    /// //     .block_on(installer.extract_dmg(&cask, Path::new("example.dmg"), Path::new("/tmp/dest")));
+    /// // match result {
+    /// //     Ok(Some(app_name)) => println!("Copied app: {}", app_name),
+    /// //     Ok(None) => println!("No .app bundle found in DMG"),
+    /// //     Err(e) => eprintln!("Extraction failed: {:?}", e),
+    /// // }
+    /// ```
     #[cfg(target_os = "macos")]
     async fn extract_dmg(
         &self,
@@ -283,7 +381,18 @@ impl CaskInstaller {
         Ok(result)
     }
 
-    /// Extract DMG file (non-macOS - returns error)
+    /// Returns a CaskError indicating DMG extraction is unsupported on non-macOS platforms.
+    ///
+    /// This function always fails on non-macOS targets because DMG mounting and extraction
+    /// require macOS-specific tools.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Called from an async context
+    /// let err = extractor.extract_dmg(&cask, Path::new("some.dmg"), Path::new("/tmp")).await;
+    /// assert!(err.is_err());
+    /// ```
     #[cfg(not(target_os = "macos"))]
     async fn extract_dmg(
         &self,
@@ -296,7 +405,19 @@ impl CaskInstaller {
         })
     }
 
-    /// Extract ZIP file
+    /// Extracts a ZIP archive into the destination directory.
+    ///
+    /// Opens the ZIP file at `zip_path` and extracts its contents into `dest_dir`.
+    /// Returns an error if the file cannot be opened, read as a ZIP archive, or extracted.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::path::Path;
+    /// # async fn example(installer: &crate::cask_install::CaskInstaller) -> Result<(), Box<dyn std::error::Error>> {
+    /// installer.extract_zip(Path::new("archive.zip"), Path::new("out/dir")).await?;
+    /// # Ok(()) }
+    /// ```
     async fn extract_zip(&self, zip_path: &Path, dest_dir: &Path) -> Result<(), Error> {
         let file = std::fs::File::open(zip_path).map_err(|e| Error::FileError {
             message: format!("failed to open zip: {e}"),
@@ -313,7 +434,45 @@ impl CaskInstaller {
         Ok(())
     }
 
-    /// Extract tarball
+    /// Extracts a gzip-compressed tarball into the specified destination directory.
+    
+    ///
+    
+    /// Attempts to open `tarball_path` as a gzip-compressed tar archive and unpacks its contents
+    
+    /// into `dest_dir`.
+    
+    ///
+    
+    /// # Returns
+    
+    ///
+    
+    /// `Ok(())` on success. Returns `Err(Error::FileError)` if the tarball cannot be opened,
+    
+    /// or `Err(Error::CaskError)` if extraction fails.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```no_run
+    
+    /// # use std::path::Path;
+    
+    /// # // `installer` is an instance of CaskInstaller available in your context
+    
+    /// # fn example(installer: &crate::cask_install::CaskInstaller) -> Result<(), crate::Error> {
+    
+    /// installer.extract_tarball(Path::new("archive.tar.gz"), Path::new("output_dir"))?;
+    
+    /// # Ok(())
+    
+    /// # }
+    
+    /// ```
     fn extract_tarball(&self, tarball_path: &Path, dest_dir: &Path) -> Result<(), Error> {
         let file = std::fs::File::open(tarball_path).map_err(|e| Error::FileError {
             message: format!("failed to open tarball: {e}"),
@@ -329,7 +488,27 @@ impl CaskInstaller {
         Ok(())
     }
 
-    /// Find .app bundle in a directory
+    /// Locate the first `.app` bundle name inside the given directory.
+    ///
+    /// Searches only the directory's immediate entries and returns the first entry
+    /// whose file name ends with `.app`.
+    ///
+    /// # Parameters
+    ///
+    /// - `dir`: Path to the directory to search.
+    ///
+    /// # Returns
+    ///
+    /// `Some(name)` with the bundle directory name (including the `.app` suffix) if
+    /// a bundle is found, `None` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Assuming `installer` is a `CaskInstaller` instance:
+    /// // let name = installer.find_app_bundle(Path::new("/Applications/MyMount")).unwrap();
+    /// // assert_eq!(name, Some("MyApp.app".to_string()));
+    /// ```
     fn find_app_bundle(&self, dir: &Path) -> Result<Option<String>, Error> {
         let entries = std::fs::read_dir(dir).map_err(|e| Error::FileError {
             message: format!("failed to read directory: {e}"),
@@ -349,7 +528,19 @@ impl CaskInstaller {
         Ok(None)
     }
 
-    /// Copy directory recursively
+    /// Recursively copies a directory into the given destination, preserving macOS app-bundle semantics.
+    ///
+    /// The operation uses the system `ditto` tool to perform an accurate, recursive copy suitable for `.app` bundles.
+    ///
+    /// # Errors
+    /// Returns `Error::FileError` if invoking `ditto` fails or if `ditto` exits with a non-zero status.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // let installer: CaskInstaller = /* obtain installer */ ;
+    /// // installer.copy_dir_all(std::path::Path::new("My.app"), std::path::Path::new("/Applications/My.app")).unwrap();
+    /// ```
     #[cfg(target_os = "macos")]
     fn copy_dir_all(&self, src: &Path, dst: &Path) -> Result<(), Error> {
         use std::process::Command;
@@ -374,7 +565,18 @@ impl CaskInstaller {
         Ok(())
     }
 
-    /// Uninstall a cask
+    /// Uninstalls a previously installed cask by removing its linked application (or real app), deleting the caskroom directory, and recording the uninstall in the database.
+    ///
+    /// Returns an error if the cask is not installed or if filesystem/database operations fail. Specifically, returns `Error::CaskNotInstalled` when no installed record exists for `token`, and maps filesystem failures to `Error::FileError`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::path::PathBuf;
+    /// # // setup: create CaskInstaller named `installer`
+    /// # let mut installer: crate::cask_install::CaskInstaller = unimplemented!();
+    /// installer.uninstall("example-token").expect("uninstall failed");
+    /// ```
     pub fn uninstall(&mut self, token: &str) -> Result<(), Error> {
         let installed = self
             .db
@@ -419,23 +621,82 @@ impl CaskInstaller {
         Ok(())
     }
 
-    /// Check if a cask is installed
+    /// Determine whether a cask with the given token is currently installed.
+    ///
+    /// # Returns
+    ///
+    /// `true` if a cask with `token` is installed, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // `installer` is a `CaskInstaller`
+    /// let installed = installer.is_installed("google-chrome");
+    /// ```
     pub fn is_installed(&self, token: &str) -> bool {
         self.db.get_installed_cask(token).is_some()
     }
 
-    /// Get info about an installed cask
+    /// Retrieve the installed cask record for the given token, if any.
+    ///
+    /// Returns `Some(InstalledCask)` when a cask with the specified token is recorded as installed,
+    /// or `None` if no such installation exists.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // `installer` is a prepared CaskInstaller
+    /// let token = "example-cask";
+    /// if let Some(record) = installer.get_installed(token) {
+    ///     println!("Installed version: {}", record.version);
+    /// } else {
+    ///     println!("Not installed");
+    /// }
+    /// ```
     pub fn get_installed(&self, token: &str) -> Option<crate::db::InstalledCask> {
         self.db.get_installed_cask(token)
     }
 
-    /// List all installed casks
+    /// Lists all installed casks.
+    ///
+    /// Queries the install database and returns every recorded installed cask.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<crate::db::InstalledCask>` containing all installed cask records, or an `Error` if the database query fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use zb_io::cask_install::CaskInstaller;
+    /// # fn example(installer: &CaskInstaller) -> Result<(), Box<dyn std::error::Error>> {
+    /// let installed = installer.list_installed()?;
+    /// for cask in installed {
+    ///     println!("{}", cask.token);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn list_installed(&self) -> Result<Vec<crate::db::InstalledCask>, Error> {
         self.db.list_installed_casks()
     }
 }
 
-/// Create a CaskInstaller with standard paths
+/// Constructs a CaskInstaller configured for the given root directory.
+///
+/// If `applications_dir` is `None`, uses `/Applications` on macOS or `<root>/applications` on other platforms. Ensures the applications and Caskroom directories exist, initializes the API client, blob cache, parallel downloader (with the given `concurrency`), and the on-disk database, and returns a ready-to-use `CaskInstaller`.
+///
+/// # Errors
+///
+/// Returns an `Error::StoreCorruption` if creating required directories or initializing the blob cache fails. Database and other initialization errors are propagated.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// // Create installer using defaults for application directory and 4 concurrent downloads.
+/// let installer = zb_io::create_cask_installer(Path::new("/tmp/zb-root"), None, 4).unwrap();
+/// ```
 pub fn create_cask_installer(
     root: &Path,
     applications_dir: Option<&Path>,

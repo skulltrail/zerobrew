@@ -9,6 +9,15 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    /// Creates an ApiClient configured with the official Homebrew formula and cask API endpoints.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = ApiClient::new();
+    /// assert!(client.formula_base_url.ends_with("/api/formula"));
+    /// assert!(client.cask_base_url.ends_with("/api/cask"));
+    /// ```
     pub fn new() -> Self {
         Self::with_base_urls(
             "https://formulae.brew.sh/api/formula".to_string(),
@@ -16,12 +25,47 @@ impl ApiClient {
         )
     }
 
+    /// Creates an ApiClient using the provided formula base URL and derives the cask base URL by replacing "/formula" with "/cask".
+    ///
+    /// The derived cask base URL is produced by performing a literal replacement of the first occurrence of `/formula` with `/cask` in `formula_base_url`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = ApiClient::with_base_url("https://formulae.brew.sh/api/formula".to_string());
+    /// assert!(client.formula_base_url.contains("/formula"));
+    /// assert!(client.cask_base_url.contains("/cask"));
+    /// ```
     pub fn with_base_url(formula_base_url: String) -> Self {
         // For backward compatibility, derive cask URL from formula URL
         let cask_base_url = formula_base_url.replace("/formula", "/cask");
         Self::with_base_urls(formula_base_url, cask_base_url)
     }
 
+    /// Creates an ApiClient configured with explicit formula and cask base URLs.
+    ///
+    /// The returned client uses a reqwest client configured with a user agent and
+    /// a connection pool optimized for multiplexing parallel requests.
+    ///
+    /// # Parameters
+    ///
+    /// - `formula_base_url`: Base URL for formula endpoints (e.g. "https://example/api/formula").
+    /// - `cask_base_url`: Base URL for cask endpoints (e.g. "https://example/api/cask").
+    ///
+    /// # Returns
+    ///
+    /// An ApiClient instance configured with the provided base URLs and no cache.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = ApiClient::with_base_urls(
+    ///     "https://formulae.brew.sh/api/formula".to_string(),
+    ///     "https://formulae.brew.sh/api/cask".to_string(),
+    /// );
+    /// assert_eq!(client.formula_base_url, "https://formulae.brew.sh/api/formula");
+    /// assert_eq!(client.cask_base_url, "https://formulae.brew.sh/api/cask");
+    /// ```
     pub fn with_base_urls(formula_base_url: String, cask_base_url: String) -> Self {
         // Use HTTP/2 with connection pooling for better multiplexing of parallel requests
         let client = reqwest::Client::builder()
@@ -38,11 +82,44 @@ impl ApiClient {
         }
     }
 
+    /// Enable in-memory response caching for the client.
+    ///
+    /// Returns the modified client to allow method chaining.
+    ///
+    /// # Parameters
+    ///
+    /// - `cache`: An ApiCache instance to store cached responses (ETag, Last-Modified and body).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = ApiCache::new();
+    /// let client = ApiClient::new().with_cache(cache);
+    /// ```
     pub fn with_cache(mut self, cache: ApiCache) -> Self {
         self.cache = Some(cache);
         self
     }
 
+    /// Fetches a Formula by name from the configured formula API, using cached responses and HTTP conditional requests when available.
+    ///
+    /// If a cached entry exists the client will send `If-None-Match` and/or `If-Modified-Since` headers and will return the cached body when the server responds with `304 Not Modified`.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Formula)` parsed from the fetched (or cached on `304`) JSON; `Err(Error)` if the formula is missing (`404`), if the response has a non-success status, or if a network or JSON parse error occurs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use zb_api::ApiClient;
+    /// # async fn doc_example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ApiClient::new();
+    /// let formula = client.get_formula("wget").await?;
+    /// println!("{}", formula.name);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_formula(&self, name: &str) -> Result<Formula, Error> {
         let url = format!("{}/{}.json", self.formula_base_url, name);
 
@@ -117,6 +194,25 @@ impl ApiClient {
         Ok(formula)
     }
 
+    /// Fetches a cask by name from the configured cask API, using conditional requests and optional caching.
+    ///
+    /// This will perform an HTTP GET to "{cask_base_url}/{name}.json", attach `If-None-Match` / `If-Modified-Since` headers when a cached entry exists, and update the cache with `etag`, `last-modified`, and body when a fresh response is returned.
+    ///
+    /// # Returns
+    ///
+    /// `Cask` parsed from the response body on success. Returns `Error::MissingCask` if the server responds with 404, and `Error::NetworkFailure` for network, HTTP (non-success) or JSON parse errors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use crate::ApiClient;
+    /// # fn run() {
+    /// #   let _ = futures::executor::block_on(async {
+    /// let client = ApiClient::new();
+    /// let _ = client.get_cask("example-cask").await;
+    /// #   });
+    /// # }
+    /// ```
     pub async fn get_cask(&self, name: &str) -> Result<Cask, Error> {
         let url = format!("{}/{}.json", self.cask_base_url, name);
 

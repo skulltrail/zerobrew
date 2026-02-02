@@ -5,6 +5,22 @@ use zb_io::{ApiClient, CaskInstaller, install::Installer};
 
 use crate::commands::outdated::OutdatedPackage;
 
+/// Checks installed formulas and casks for newer versions and upgrades any that are outdated.
+///
+/// If `cask_only` is true, only casks are inspected. If `formulas` is non-empty, only packages whose name (for formulas) or token (for casks) appears in that list are considered. Progress and per-package results are printed to stdout/stderr; installer and API errors are propagated.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example() -> Result<(), zb_cli::Error> {
+/// # let mut installer = unimplemented!(); // Installer
+/// # let mut cask_inst = unimplemented!(); // CaskInstaller
+/// # let api_client = unimplemented!(); // ApiClient
+/// // Check and upgrade all formulas and casks
+/// zb_cli::commands::upgrade::execute(&mut installer, Some(&mut cask_inst), &api_client, Vec::new(), false).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn execute(
     installer: &mut Installer,
     cask_installer: Option<&mut CaskInstaller>,

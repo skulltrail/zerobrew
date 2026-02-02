@@ -68,6 +68,12 @@ impl ApiCache {
         )?;
         Ok(())
     }
+
+    /// Clear all cached entries
+    pub fn clear(&self) -> Result<(), rusqlite::Error> {
+        self.conn.execute("DELETE FROM api_cache", [])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

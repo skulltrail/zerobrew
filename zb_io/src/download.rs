@@ -1126,6 +1126,105 @@ impl ParallelDownloader {
         .await
     }
 
+    /// Download a single file without SHA256 verification (for casks with "no_check")
+    pub async fn download_single_no_verify(
+        &self,
+        request: DownloadRequest,
+        progress: Option<DownloadProgressCallback>,
+    ) -> Result<DownloadResult, Error> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("semaphore error: {e}"),
+            })?;
+
+        let name = request.name.clone();
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::DownloadStarted {
+                name: name.clone(),
+                total_bytes: None,
+            });
+        }
+
+        let response = self
+            .downloader
+            .client
+            .get(&request.url)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkFailure {
+                message: e.to_string(),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(Error::NetworkFailure {
+                message: format!("HTTP {}", response.status()),
+            });
+        }
+
+        // Generate a unique key based on URL hash for casks without SHA
+        let url_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(request.url.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        let mut writer = self
+            .downloader
+            .blob_cache
+            .start_write(&url_hash)
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("failed to create blob writer: {e}"),
+            })?;
+
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::NetworkFailure {
+                message: format!("failed to read chunk: {e}"),
+            })?;
+
+            downloaded += chunk.len() as u64;
+            writer
+                .write_all(&chunk)
+                .map_err(|e| Error::NetworkFailure {
+                    message: format!("failed to write chunk: {e}"),
+                })?;
+
+            if let Some(cb) = &progress {
+                cb(InstallProgress::DownloadProgress {
+                    name: name.clone(),
+                    downloaded,
+                    total_bytes: None,
+                });
+            }
+        }
+
+        writer.flush().map_err(|e| Error::NetworkFailure {
+            message: format!("failed to flush download: {e}"),
+        })?;
+
+        let blob_path = writer.commit()?;
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::DownloadCompleted {
+                name: name.clone(),
+                total_bytes: downloaded,
+            });
+        }
+
+        Ok(DownloadResult {
+            name,
+            sha256: url_hash,
+            blob_path,
+            index: 0,
+        })
+    }
+
     pub async fn download_all(
         &self,
         requests: Vec<DownloadRequest>,

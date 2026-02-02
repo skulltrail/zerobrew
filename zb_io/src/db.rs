@@ -16,6 +16,22 @@ pub struct InstalledKeg {
     pub installed_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct InstalledCask {
+    pub token: String,
+    pub version: String,
+    pub app_path: Option<String>,
+    pub installed_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CaskArtifactRecord {
+    pub token: String,
+    pub artifact_type: String,
+    pub source_path: String,
+    pub installed_path: String,
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(|e| Error::StoreCorruption {
@@ -58,6 +74,22 @@ impl Database {
                 linked_path TEXT NOT NULL,
                 target_path TEXT NOT NULL,
                 PRIMARY KEY (name, linked_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS installed_casks (
+                token TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                app_path TEXT,
+                installed_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS cask_artifacts (
+                token TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                installed_path TEXT NOT NULL,
+                PRIMARY KEY (token, installed_path),
+                FOREIGN KEY (token) REFERENCES installed_casks(token)
             );
             ",
         )
@@ -155,6 +187,85 @@ impl Database {
             })?;
 
         Ok(keys)
+    }
+
+    // Cask-related methods
+
+    pub fn get_installed_cask(&self, token: &str) -> Option<InstalledCask> {
+        self.conn
+            .query_row(
+                "SELECT token, version, app_path, installed_at FROM installed_casks WHERE token = ?1",
+                params![token],
+                |row| {
+                    Ok(InstalledCask {
+                        token: row.get(0)?,
+                        version: row.get(1)?,
+                        app_path: row.get(2)?,
+                        installed_at: row.get(3)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
+    pub fn list_installed_casks(&self) -> Result<Vec<InstalledCask>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT token, version, app_path, installed_at FROM installed_casks ORDER BY token",
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let casks = stmt
+            .query_map([], |row| {
+                Ok(InstalledCask {
+                    token: row.get(0)?,
+                    version: row.get(1)?,
+                    app_path: row.get(2)?,
+                    installed_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query installed casks: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(casks)
+    }
+
+    pub fn get_cask_artifacts(&self, token: &str) -> Result<Vec<CaskArtifactRecord>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT token, artifact_type, source_path, installed_path FROM cask_artifacts WHERE token = ?1",
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to prepare statement: {e}"),
+            })?;
+
+        let artifacts = stmt
+            .query_map(params![token], |row| {
+                Ok(CaskArtifactRecord {
+                    token: row.get(0)?,
+                    artifact_type: row.get(1)?,
+                    source_path: row.get(2)?,
+                    installed_path: row.get(3)?,
+                })
+            })
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to query cask artifacts: {e}"),
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to collect results: {e}"),
+            })?;
+
+        Ok(artifacts)
     }
 }
 
@@ -257,6 +368,76 @@ impl<'a> InstallTransaction<'a> {
         self.tx.commit().map_err(|e| Error::StoreCorruption {
             message: format!("failed to commit transaction: {e}"),
         })
+    }
+
+    // Cask-related transaction methods
+
+    pub fn record_cask_install(
+        &self,
+        token: &str,
+        version: &str,
+        app_path: Option<&str>,
+    ) -> Result<(), Error> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        self.tx
+            .execute(
+                "INSERT OR REPLACE INTO installed_casks (token, version, app_path, installed_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![token, version, app_path, now],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to record cask install: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    pub fn record_cask_artifact(
+        &self,
+        token: &str,
+        artifact_type: &str,
+        source_path: &str,
+        installed_path: &str,
+    ) -> Result<(), Error> {
+        self.tx
+            .execute(
+                "INSERT OR REPLACE INTO cask_artifacts (token, artifact_type, source_path, installed_path)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![token, artifact_type, source_path, installed_path],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to record cask artifact: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    pub fn record_cask_uninstall(&self, token: &str) -> Result<(), Error> {
+        // Remove cask artifacts records
+        self.tx
+            .execute(
+                "DELETE FROM cask_artifacts WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove cask artifacts records: {e}"),
+            })?;
+
+        // Remove installed cask record
+        self.tx
+            .execute(
+                "DELETE FROM installed_casks WHERE token = ?1",
+                params![token],
+            )
+            .map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove cask install record: {e}"),
+            })?;
+
+        Ok(())
     }
 
     // Transaction is rolled back automatically when dropped without commit

@@ -1,0 +1,16 @@
+{
+    "token": "visual-studio-code",
+    "name": ["Microsoft Visual Studio Code", "VS Code"],
+    "version": "1.85.0",
+    "url": "https://update.code.visualstudio.com/1.85.0/darwin-arm64/stable",
+    "sha256": "abc123def456789abc123def456789abc123def456789abc123def456789abcd",
+    "homepage": "https://code.visualstudio.com/",
+    "desc": "Open-source code editor",
+    "artifacts": [
+        {"app": ["Visual Studio Code.app"]},
+        {"binary": ["Visual Studio Code.app/Contents/Resources/app/bin/code"]}
+    ],
+    "depends_on": {
+        "macos": ">= :monterey"
+    }
+}

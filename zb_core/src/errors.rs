@@ -9,12 +9,15 @@ pub enum Error {
     StoreCorruption { message: String },
     NetworkFailure { message: String },
     MissingFormula { name: String },
+    MissingCask { name: String },
     UnsupportedTap { name: String },
     DependencyCycle { cycle: Vec<String> },
     NotInstalled { name: String },
+    CaskNotInstalled { name: String },
     FileError { message: String },
     InvalidArgument { message: String },
     ExecutionError { message: String },
+    CaskError { message: String },
 }
 
 impl fmt::Display for Error {
@@ -32,6 +35,7 @@ impl fmt::Display for Error {
             Error::StoreCorruption { message } => write!(f, "store corruption: {message}"),
             Error::NetworkFailure { message } => write!(f, "network failure: {message}"),
             Error::MissingFormula { name } => write!(f, "missing formula '{name}'"),
+            Error::MissingCask { name } => write!(f, "missing cask '{name}'"),
             Error::UnsupportedTap { name } => {
                 write!(
                     f,
@@ -43,9 +47,11 @@ impl fmt::Display for Error {
                 write!(f, "dependency cycle detected: {rendered}")
             }
             Error::NotInstalled { name } => write!(f, "formula '{name}' is not installed"),
+            Error::CaskNotInstalled { name } => write!(f, "cask '{name}' is not installed"),
             Error::FileError { message } => write!(f, "file error: {message}"),
             Error::InvalidArgument { message } => write!(f, "invalid argument: {message}"),
             Error::ExecutionError { message } => write!(f, "{message}"),
+            Error::CaskError { message } => write!(f, "cask error: {message}"),
         }
     }
 }
